@@ -1,0 +1,43 @@
+{
+  "name": "write-write-write",
+  "version": "0.1.0",
+  "private": true,
+  "description": "한 문장씩, 끝없이. 오프라인 영어 작문 연습.",
+  "author": "write-write-write",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seobaeksol/write-write-write.git"
+  },
+  "bugs": {
+    "url": "https://github.com/seobaeksol/write-write-write/issues"
+  },
+  "homepage": "https://github.com/seobaeksol/write-write-write#readme",
+  "type": "module",
+  "main": "src/desktop.mjs",
+  "engines": { "node": ">=22.12" },
+  "scripts": {
+    "setup": "node scripts/setup-model.mjs",
+    "prestart": "npm run setup",
+    "start": "electron .",
+    "preweb": "npm run setup",
+    "web": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "pack": "node scripts/setup-model.mjs --check && electron-builder --dir",
+    "build": "node scripts/setup-model.mjs --check && electron-builder"
+  },
+  "dependencies": { "node-llama-cpp": "3.20.0" },
+  "devDependencies": { "electron": "44.3.0", "electron-builder": "26.15.3" },
+  "build": {
+    "appId": "local.writewritewrite.app",
+    "productName": "Write Write Write",
+    "compression": "store",
+    "directories": { "output": "release", "buildResources": "build" },
+    "files": ["src/**/*", "public/**/*", "build/icon.png", "package.json", "README.md", "!node_modules/node-llama-cpp/bins/**/*", "node_modules/node-llama-cpp/bins/${os}-${arch}*/**/*", "!node_modules/node-llama-cpp/llama/localBuilds/**/*", "node_modules/node-llama-cpp/llama/localBuilds/${os}-${arch}*/**/*", "!node_modules/@node-llama-cpp/*/bins/**/*", "node_modules/@node-llama-cpp/${os}-${arch}*/bins/**/*"],
+    "extraResources": [{ "from": "models", "to": "models", "filter": ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf", "model.json", "LICENSE-Qwen.txt", "README.md"] }],
+    "asarUnpack": ["node_modules/node-llama-cpp/bins", "node_modules/node-llama-cpp/llama/localBuilds", "node_modules/@node-llama-cpp/*"],
+    "npmRebuild": false,
+    "win": { "target": "zip", "icon": "build/icon.ico" },
+    "mac": { "target": "dmg", "icon": "build/icon.icns", "category": "public.app-category.education" },
+    "linux": { "target": "AppImage", "icon": "build/icon.png", "category": "Education" }
+  }
+}

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f6f2" />
+    <meta name="description" content="한 문장씩, 끝없이. 내 기기에서 연습하는 영어 작문." />
+    <title>write, write, write.</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232d392c'/%3E%3Ctext x='12' y='44' font-family='Georgia' font-size='44' fill='%23f7f6f2'%3Ew%3C/text%3E%3C/svg%3E" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <a class="wordmark" href="/" aria-label="write, write, write. 홈">write, write, write<span>.</span></a>
+        <div class="connection" id="connection" data-state="loading" role="status">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-label">AI 준비 중</span>
+        </div>
+      </header>
+
+      <main class="bootstrap" id="bootstrap" aria-labelledby="bootstrap-title">
+        <section class="bootstrap-card" id="bootstrap-card" aria-live="polite">
+          <p class="eyebrow">시작하는 중</p>
+          <h1 id="bootstrap-title" tabindex="-1">작문 연습을 준비하고 있어요.</h1>
+          <p class="bootstrap-message" id="bootstrap-message">앱 리소스를 확인하고 있어요.</p>
+
+          <div class="progress-track" role="progressbar" id="bootstrap-progress" aria-label="앱 준비 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="5">
+            <span id="bootstrap-progress-bar" style="width: 5%"></span>
+          </div>
+          <p class="progress-value" id="bootstrap-progress-value">5%</p>
+
+          <ol class="bootstrap-steps" id="bootstrap-steps">
+            <li data-stage="resources"><span class="step-marker" aria-hidden="true"></span><span>앱 리소스 불러오기</span></li>
+            <li data-stage="engine"><span class="step-marker" aria-hidden="true"></span><span>AI 엔진 준비하기</span></li>
+            <li data-stage="model"><span class="step-marker" aria-hidden="true"></span><span>언어 모델 불러오기</span></li>
+            <li data-stage="tutor"><span class="step-marker" aria-hidden="true"></span><span>작문 코치 연결하기</span></li>
+          </ol>
+
+          <div class="bootstrap-error" id="bootstrap-error" hidden role="alert">
+            <p class="bootstrap-error-title">앱을 시작하지 못했어요.</p>
+            <p id="bootstrap-error-reason"></p>
+            <div class="bootstrap-help" id="bootstrap-help" hidden>
+              <span>해결 방법</span>
+              <p id="bootstrap-error-action"></p>
+            </div>
+            <button class="button button-primary" type="button" id="bootstrap-retry">다시 시도</button>
+          </div>
+        </section>
+      </main>
+
+      <main class="practice" id="practice" hidden>
+        <section class="writing" aria-labelledby="prompt">
+          <p class="eyebrow">영어로 써 보세요</p>
+          <h1 id="prompt" tabindex="-1">첫 문장을 준비하고 있어요.</h1>
+          <form id="writing-form" novalidate>
+            <div class="editor" id="editor">
+              <label class="sr-only" for="answer">영어 작문</label>
+              <textarea id="answer" name="answer" placeholder="여기에 영어로 적어 보세요." rows="5" maxlength="1200" autocomplete="off" autocapitalize="sentences" spellcheck="false" disabled></textarea>
+              <div class="editor-bottom">
+                <span class="keyboard-hint" id="keyboard-hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span>
+                <button class="button button-primary" type="submit" id="submit" disabled>
+                  <span id="submit-label">피드백 받기</span>
+                  <svg id="submit-arrow" width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <span class="spinner" id="submit-spinner" hidden aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </form>
+          <div class="notice" id="notice" hidden>
+            <p id="notice-message" role="status"></p>
+            <button class="text-button" type="button" id="retry-connection" hidden>다시 연결</button>
+          </div>
+          <p class="error" id="error" role="alert" hidden></p>
+          <button class="text-button" type="button" id="fresh-prompt" hidden>새 문장 받기</button>
+          <p class="quiet-note" id="quiet-note">완벽하지 않아도 괜찮아요. 한 문장부터 시작해요.</p>
+        </section>
+
+        <section class="feedback" id="feedback" aria-labelledby="feedback-heading" hidden>
+          <div class="feedback-title">
+            <span class="verdict-icon" id="verdict-icon" aria-hidden="true">✓</span>
+            <h2 id="feedback-heading" tabindex="-1">뜻을 잘 전달했어요.</h2>
+          </div>
+          <p class="correction-label" id="correction-label">자연스러운 표현</p>
+          <p class="corrected" id="corrected" lang="en"></p>
+          <ul class="feedback-points" id="feedback-points"></ul>
+          <div class="feedback-actions">
+            <button class="text-button" id="rewrite" type="button">다시 써 보기</button>
+            <button class="button button-primary" id="next" type="button" aria-keyshortcuts="Enter">다음 문장 <span aria-hidden="true">Enter ↵</span></button>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer"><span>한 문장씩, 끝없이.</span><span class="footer-separator" aria-hidden="true">·</span><span>내 기기에서만 작동하는 AI</span></footer>
+    </div>
+  </body>
+</html>
