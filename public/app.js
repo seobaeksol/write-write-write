@@ -19,7 +19,22 @@
     corrected: byId("corrected"), correctionLabel: byId("correction-label"),
     points: byId("feedback-points"), rewrite: byId("rewrite"), next: byId("next"), freshPrompt: byId("fresh-prompt"),
   };
+  // randomUUID requires HTTPS (or localhost); LAN HTTP still supports getRandomValues.
+  function createId() {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
   let settingsLoading = false;
+  const sessionId = (() => { try { let id = sessionStorage.getItem('practice.session'); if (!id) { id = createId(); sessionStorage.setItem('practice.session', id); } return id; } catch { return createId(); } })();
+  let assisted = false;
+  let pendingSubmission = null;
+  let lastActivityPing = 0;
+  let activeMs = 0;
+  let activeSince = null;
   let prompt = null;
   let review = null;
   let state = "loading";
@@ -32,12 +47,17 @@
   const stages = ["resources", "engine", "model", "tutor"];
 
   const validPrompt = (value) => value && (typeof value.id === "string" || typeof value.id === "number") && typeof value.korean === "string" && value.korean.trim();
-  const validReview = (value) => value && ["good", "revise"].includes(value.verdict) && typeof value.corrected === "string" && value.corrected.trim() && Array.isArray(value.feedback) && value.feedback.every((point) => typeof point === "string") && validPrompt(value.nextPrompt);
+  const validReview = (value) => value && ["good", "revise"].includes(value.verdict) && typeof value.corrected === "string" && value.corrected.trim() && Array.isArray(value.feedback) && value.feedback.every((point) => typeof point === "string");
 
+  function trackTime() {
+    if (activeSince !== null) activeMs = Math.min(3_600_000, activeMs + performance.now() - activeSince);
+    activeSince = state === 'ready' && !busy && !review && !document.hidden && !byId('learning-dialog').open && !byId('settings-dialog').open ? performance.now() : null;
+  }
   function save() {
+    trackTime();
     clearTimeout(draftTimer);
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ prompt, answer: ui.answer.value, review }));
+      localStorage.setItem(storageKey, JSON.stringify({ prompt, answer: ui.answer.value, review, pendingSubmission, activeMs, assisted, difficult: byId("felt-difficult").checked }));
     } catch { /* Practice works even when browser storage is unavailable. */ }
   }
 
@@ -46,14 +66,20 @@
       const saved = JSON.parse(localStorage.getItem(storageKey));
       if (!validPrompt(saved?.prompt)) return;
       prompt = saved.prompt;
+      pendingSubmission = saved.pendingSubmission || null;
+      activeMs = Number.isFinite(saved.activeMs) ? saved.activeMs : 0;
       ui.answer.value = typeof saved.answer === "string" ? saved.answer.slice(0, 1200) : "";
       review = validReview(saved.review) ? saved.review : null;
+      assisted = !!saved.assisted || !!review;
+      byId("felt-difficult").checked = !!saved.difficult;
       renderPrompt();
       renderReview();
     } catch { /* An old or incomplete draft must not prevent opening the app. */ }
   }
 
   function renderPrompt() {
+    const reasonLabels = { new: '새 문장', review: '복습할 문장', relearning: '다시 연습할 문장', explore: '조금 새로운 도전', 'extra-practice': '추가 연습', restored: '이어서 연습' };
+    byId('practice-context').textContent = prompt ? `${reasonLabels[prompt.reason] || '영어로 써 보세요'} · ${prompt.difficulty ? '난이도 ' + prompt.difficulty : '영어 작문'}` : '영어로 써 보세요';
     ui.prompt.textContent = prompt?.korean || "첫 문장을 준비하고 있어요.";
     ui.answer.disabled = !prompt || busy;
     updateSubmit();
@@ -70,6 +96,11 @@
     ui.next.disabled = busy;
     ui.freshPrompt.hidden = !promptExpired;
     ui.freshPrompt.disabled = busy;
+    byId('skip-prompt').disabled = busy || state !== 'ready';
+    byId('reveal-answer').disabled = busy || state !== 'ready';
+    byId('report-feedback').disabled = busy;
+    byId('felt-difficult').disabled = busy || !!review;
+    trackTime();
   }
 
   function renderReview() {
@@ -162,7 +193,7 @@
       const status = await request("/api/status");
       if (!["loading", "ready", "error"].includes(status.state)) throw new Error("AI 상태를 확인하지 못했어요. 다시 연결해 주세요.");
       if (status.state === "ready" && !prompt) {
-        const nextPrompt = await request("/api/prompt");
+        const nextPrompt = await request(`/api/prompt?session=${encodeURIComponent(sessionId)}`);
         if (!validPrompt(nextPrompt)) throw new Error("연습 문장을 불러오지 못했어요. 다시 연결해 주세요.");
         prompt = nextPrompt;
         promptValidated = true;
@@ -203,6 +234,7 @@
   async function submit(event) {
     event?.preventDefault();
     if (busy || state !== "ready" || !prompt || promptExpired || !ui.answer.value.trim()) return;
+    trackTime();
     busy = true;
     showError("");
     review = null;
@@ -211,12 +243,19 @@
     updateSubmit();
     save();
     try {
+      const answer = ui.answer.value.trim();
+      if (!pendingSubmission || pendingSubmission.promptId !== prompt.id || pendingSubmission.answer !== answer) {
+        pendingSubmission = { id: createId(), promptId: prompt.id, answer };
+      }
+      save();
       const result = await request("/api/review", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ promptId: prompt.id, answer: ui.answer.value.trim() }),
+        body: JSON.stringify({ promptId: prompt.id, answer, submissionId: pendingSubmission.id, assisted, activeMs: Math.round(activeMs), difficult: byId('felt-difficult').checked }),
       });
       if (!validReview(result)) throw new Error("피드백을 완성하지 못했어요. 같은 문장으로 다시 시도해 주세요.");
       review = result;
+      assisted = true;
+      pendingSubmission = null;
       renderReview();
       save();
       ui.feedbackHeading.focus({ preventScroll: true });
@@ -243,6 +282,10 @@
     }
   });
   ui.answer.addEventListener("input", () => {
+    if (Date.now() - lastActivityPing > 15_000) {
+      lastActivityPing = Date.now();
+      void request('/api/activity', { method: 'POST' }).catch(() => {});
+    }
     if (review) { review = null; renderReview(); }
     if (!promptExpired) showError("");
     updateSubmit();
@@ -255,27 +298,38 @@
     save();
     ui.answer.focus();
   });
-  function nextSentence() {
-    if (!review || busy) return;
-    prompt = review.nextPrompt;
-    promptValidated = true;
-    promptExpired = false;
-    review = null;
-    ui.answer.value = "";
-    ui.answer.style.height = "";
-    showError("");
-    renderPrompt();
-    renderReview();
-    save();
-    ui.prompt.focus({ preventScroll: true });
-    ui.answer.focus({ preventScroll: true });
-    window.scrollTo({ top: 0, behavior: "instant" });
+  async function nextSentence(skip = false) {
+    if ((!review && !skip) || busy || !prompt) return;
+    busy = true;
+    updateSubmit();
+    try {
+      const fresh = await request(`/api/prompt?session=${encodeURIComponent(sessionId)}&after=${encodeURIComponent(prompt.id)}&skip=${skip === true}`);
+      if (!validPrompt(fresh)) throw new Error('새 문장을 불러오지 못했어요. 다시 시도해 주세요.');
+      prompt = fresh;
+      promptValidated = true;
+      promptExpired = false;
+      review = null;
+      pendingSubmission = null;
+      activeMs = 0;
+      assisted = false;
+      activeSince = null;
+      byId('felt-difficult').checked = false;
+      byId('revealed-reference').hidden = true;
+      ui.answer.value = '';
+      ui.answer.style.height = '';
+      showError('');
+      renderPrompt();
+      renderReview();
+      save();
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    } catch (error) { showError(error.message); }
+    finally { busy = false; renderPrompt(); ui.answer.focus({ preventScroll: true }); }
   }
-  ui.next.addEventListener("click", nextSentence);
+  ui.next.addEventListener("click", () => void nextSentence());
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 ||
         event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
-        event.defaultPrevented || byId("settings-dialog").open || !review || busy) return;
+        event.defaultPrevented || byId("settings-dialog").open || byId("learning-dialog").open || !review || busy) return;
     // Keep Enter's normal activation on explicitly focused buttons and links.
     if (event.target.closest("button, a") && event.target !== ui.next) return;
     event.preventDefault();
@@ -286,7 +340,7 @@
     busy = true;
     updateSubmit();
     try {
-      const fresh = await request("/api/prompt");
+      const fresh = await request(`/api/prompt?session=${encodeURIComponent(sessionId)}`);
       if (!validPrompt(fresh)) throw new Error("새 문장을 불러오지 못했어요. 다시 시도해 주세요.");
       prompt = fresh;
       promptValidated = true;
@@ -345,6 +399,7 @@
   }
   byId("model-settings").addEventListener("click", async () => {
     settingsDialog.showModal();
+    trackTime();
     settingsLoading = true;
     updateSubmit();
     try {
@@ -388,6 +443,70 @@
       void checkStatus();
     } catch (error) { settingsMessage.textContent = error.message; }
     finally { settingsLoading = false; updateSubmit(); }
+  });
+  const learningDialog = byId('learning-dialog');
+  async function loadLearning() {
+    const data = await request('/api/learning');
+    byId('learning-summary').textContent = `${data.completed}개 학습 · 복습 대기 ${data.due}개 · 첫 시도 정답률 ${data.firstAttemptAccuracy === null ? '아직 기록 없음' : Math.round(data.firstAttemptAccuracy * 100) + '%'} · 생성 문장 ${data.generated}개`;
+    byId('generation-enabled').checked = data.generationEnabled;
+    byId('learning-skills').replaceChildren(...data.skills.map(skill => {
+      const item = document.createElement('li');
+      item.textContent = `${skill.label}: ${Math.round(skill.accuracy * 100)}% · 서로 다른 ${skill.distinct_examples}개 문장${skill.distinct_examples < 5 ? ' (자료 수집 중)' : ''}`;
+      return item;
+    }));
+    byId('learning-history').replaceChildren(...data.history.map(row => {
+      const item = document.createElement('li');
+      const sentence = document.createElement('strong'); sentence.textContent = row.korean;
+      const answer = document.createElement('p'); answer.textContent = `${row.answer} · ${row.result.verdict === 'good' ? '정답' : '다시 연습'} · 제출 ${row.number}회차`;
+      item.append(sentence, answer); return item;
+    }));
+  }
+  byId('learning-open').addEventListener('click', async () => {
+    learningDialog.showModal();
+    trackTime();
+    byId('learning-message').textContent = '';
+    try { await loadLearning(); } catch (error) { byId('learning-message').textContent = error.message; }
+  });
+  learningDialog.addEventListener('close', trackTime);
+  settingsDialog.addEventListener('close', trackTime);
+  byId('learning-close').addEventListener('click', () => learningDialog.close());
+  byId('generation-enabled').addEventListener('change', async event => {
+    try { await request('/api/learning/generation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); }
+    catch (error) { event.target.checked = !event.target.checked; byId('learning-message').textContent = error.message; }
+  });
+  byId('learning-export').addEventListener('click', async () => {
+    try {
+      const data = await request('/api/learning/export');
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = 'writing-learning-history.json'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { byId('learning-message').textContent = error.message; }
+  });
+  byId('learning-reset').addEventListener('click', async () => {
+    if (!confirm('답안 기록과 복습 일정을 모두 삭제할까요? 먼저 내보내기로 보관할 수 있어요.')) return;
+    try {
+      await request('/api/learning/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmation: 'RESET' }) });
+      prompt = null; review = null; assisted = false; pendingSubmission = null; activeMs = 0; activeSince = null; ui.answer.value = '';
+      renderReview(); save(); learningDialog.close(); await checkStatus();
+    } catch (error) { byId('learning-message').textContent = error.message; }
+  });
+  byId('skip-prompt').addEventListener('click', () => void nextSentence(true));
+  byId('reveal-answer').addEventListener('click', async () => {
+    if (!prompt || busy) return;
+    try {
+      const data = await request('/api/prompt/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promptId: prompt.id }) });
+      assisted = true;
+      save();
+      byId('revealed-reference').textContent = data.reference;
+      byId('revealed-reference').hidden = false;
+    } catch (error) { showError(error.message); }
+  });
+  byId('report-feedback').addEventListener('click', async () => {
+    if (!prompt || busy) return;
+    try {
+      await request('/api/learning/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promptId: prompt.id }) });
+      showError('이 판정은 학습 수준과 복습 계산에서 제외했어요.');
+    } catch (error) { showError(error.message); }
   });
   window.addEventListener("pagehide", save);
   window.addEventListener("online", () => { if (state === "error") void checkStatus(); });

@@ -131,3 +131,11 @@ dialog .button { width: 100%; margin-top: 10px; }
 @media (max-width: 480px) { .header { flex-wrap: wrap; } .header-tools { margin-left: auto; gap: 16px; } dialog { padding: 22px; } }
 
 .optional-expression { margin-top: 22px; padding: 0 18px 12px; border-left: 2px solid var(--border); color: #72766b; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
+
+.practice-tools { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.check-label { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #74776e; }
+.check-label input { width: auto; min-height: 0; }
+.learning-list { padding-left: 20px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.learning-list li { margin: 12px 0; }
+.learning-list p { margin: 4px 0; color: #74776e; }
+@media (max-width: 680px) { .header { flex-wrap: wrap; } .header-tools { flex-wrap: wrap; gap: 14px; } }

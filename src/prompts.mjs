@@ -1,7 +1,7 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 // Everyday A2–B1 exercises, shuffled without repeats within each cycle.
-const prompts = [
+export const builtinPairs = [
   ['오늘은 평소보다 조금 일찍 일어났어요.', 'I woke up a little earlier than usual today.'],
   ['퇴근하고 집에 가는 길에 우유를 사야 해요.', 'I need to buy some milk on my way home from work.'],
   ['비가 그치면 잠깐 산책하러 갈 거예요.', 'I will go for a short walk when the rain stops.'],
@@ -124,21 +124,8 @@ const prompts = [
   ['오늘 배운 표현을 내일 다시 연습할 거예요.', 'I will practice the expressions I learned today again tomorrow.'],
 ];
 
-let remaining = [];
-let previous = -1;
-
-export function createPrompt() {
-  if (!remaining.length) {
-    remaining = prompts.map((_, index) => index);
-    for (let i = remaining.length - 1; i > 0; i--) {
-      const j = randomInt(i + 1);
-      [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
-    }
-    if (remaining.at(-1) === previous) {
-      [remaining[0], remaining[remaining.length - 1]] = [remaining.at(-1), remaining[0]];
-    }
-  }
-  previous = remaining.pop();
-  const [korean, reference] = prompts[previous];
-  return { id: randomUUID(), korean, reference };
-}
+// Stable content IDs are independent of the order of the shipped collection.
+export const builtinExamples = builtinPairs.map(([korean, reference]) => ({
+  id: 'builtin-' + createHash('sha256').update(korean).digest('hex').slice(0, 20),
+  korean, reference,
+}));

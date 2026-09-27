@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { createPrompt } from './prompts.mjs';
+import { openLearningStore } from './learning-store.mjs';
+import { createLearningWorker } from './learning-worker.mjs';
 import { normalizeEndpoint, listModels, createLMStudioTutor } from './lm-studio.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -35,22 +36,9 @@ export async function startServer({
   } catch (error) { if (error.code !== 'ENOENT') console.warn('모델 설정을 기본값으로 시작합니다.'); }
   let switching = false;
   let closing = false;
-  const savedPath = path.join(dataDir, 'prompts.json');
-  let prompts = new Map();
-  try { prompts = new Map(JSON.parse(await readFile(savedPath, 'utf8'))); }
-  catch (error) { if (error.code !== 'ENOENT') console.warn('문장 기록을 새로 시작합니다.'); }
-  let saveChain = Promise.resolve();
-  async function remember(prompt) {
-    prompts.set(prompt.id, prompt);
-    if (prompts.size > 256) prompts.delete(prompts.keys().next().value);
-    const data = JSON.stringify([...prompts]);
-    saveChain = saveChain.catch(() => {}).then(async () => {
-      await writeFile(`${savedPath}.tmp`, data);
-      await rename(`${savedPath}.tmp`, savedPath);
-    });
-    await saveChain;
-    return { id: prompt.id, korean: prompt.korean };
-  }
+  const learning = openLearningStore(dataDir);
+  let worker;
+  let closed = false;
   let state = 'loading';
   let stage = 'resources';
   let progress = 8;
@@ -72,6 +60,15 @@ export async function startServer({
     res.end(JSON.stringify(data));
   };
   const fail = (status, error, code) => Object.assign(new Error(error), { status, code });
+  async function readJson(req) {
+    if (!req.headers['content-type']?.startsWith('application/json')) throw fail(415, 'JSON 형식으로 보내 주세요.');
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 8192) throw fail(413, '입력 내용이 너무 길어요.'); }
+    try { return JSON.parse(body); } catch { throw fail(400, '입력 내용을 확인해 주세요.'); }
+  }
+  function localOnly(req) {
+    if (!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) throw fail(403, '학습 데이터 관리는 이 컴퓨터에서 해 주세요.');
+  }
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -83,6 +80,27 @@ export async function startServer({
       }
       if (req.headers.origin && req.headers.origin !== base.origin) throw fail(403, '앱 화면에서 다시 시도해 주세요.');
       const url = new URL(req.url, base);
+      if (req.method === 'POST' && url.pathname === '/api/activity') { await worker?.foreground(); return json(res,200,{ ok: true }); }
+      if (url.pathname.startsWith('/api/learning')) {
+        localOnly(req);
+        if (req.method === 'GET' && url.pathname === '/api/learning') return json(res, 200, learning.stats());
+        if (req.method === 'GET' && url.pathname === '/api/learning/export') return json(res, 200, learning.exportData());
+        if (req.method === 'POST') {
+          const data = await readJson(req);
+          if (busy || switching || closing) throw fail(409, '현재 작업이 끝난 뒤 다시 시도해 주세요.');
+          await worker?.foreground();
+          if (busy || switching || closing) throw fail(409, '현재 작업이 끝난 뒤 다시 시도해 주세요.');
+          if (url.pathname === '/api/learning/reset' && data?.confirmation === 'RESET') { learning.reset(); return json(res,200,{ reset: true }); }
+          if (url.pathname === '/api/learning/generation' && typeof data?.enabled === 'boolean') { learning.setGeneration(data.enabled); return json(res,200,{ enabled: data.enabled }); }
+          if (url.pathname === '/api/learning/report' && typeof data?.promptId === 'string') return json(res,200,learning.report(data.promptId));
+          throw fail(400, '학습 설정을 확인해 주세요.');
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/prompt/reveal') {
+        const data = await readJson(req);
+        if (typeof data?.promptId !== 'string') throw fail(400,'문장을 확인해 주세요.');
+        return json(res,200,learning.reveal(data.promptId));
+      }
       if (req.method === 'GET' && url.pathname === '/api/settings') return json(res, 200, { ...selection, state });
       if (req.method === 'GET' && url.pathname === '/api/models') {
         let endpoint;
@@ -110,6 +128,7 @@ export async function startServer({
         if (busy || switching || state === 'loading' || closing) throw fail(409, '현재 작업이 끝난 뒤 모델을 변경해 주세요.');
         switching = true;
         try {
+          await worker?.foreground();
           if (next.provider === 'lmstudio') {
             const models = await modelLister(next.endpoint);
             if (!models.some(model => model.id === next.modelId)) throw fail(400, '목록에서 사용할 모델을 선택해 주세요.');
@@ -129,40 +148,51 @@ export async function startServer({
       }
       if (req.method === 'GET' && url.pathname === '/api/prompt') {
         if (state !== 'ready' || switching || closing) throw fail(503, message);
+        await worker?.foreground();
         const id = url.searchParams.get('id');
         if (id) {
-          const prompt = prompts.get(id);
+          const prompt = learning.presentation(id);
           if (!prompt) throw fail(404, '이전 문장이 만료됐어요. 새 문장을 시작해 주세요.', 'PROMPT_EXPIRED');
-          return json(res, 200, { id, korean: prompt.korean });
+          return json(res, 200, learning.publicPrompt(prompt));
         }
-        return json(res, 200, await remember(createPrompt()));
+        if (busy) throw fail(409, '피드백이 끝난 뒤 다음 문장으로 이동해 주세요.');
+        const session = url.searchParams.get('session') || 'default';
+        if (session.length > 100) throw fail(400, '세션을 확인해 주세요.');
+        return json(res, 200, learning.select(session, url.searchParams.get('after'), url.searchParams.get('skip') === 'true'));
       }
       if (req.method === 'POST' && url.pathname === '/api/review') {
         if (state !== 'ready' || switching || closing) throw fail(503, message);
         if (busy) throw fail(429, '앞 문장을 확인하고 있어요. 잠시 후 다시 시도해 주세요.');
-        if (!req.headers['content-type']?.startsWith('application/json')) throw fail(415, 'JSON 형식으로 보내 주세요.');
-        let body = '';
-        req.setEncoding('utf8');
-        for await (const chunk of req) {
-          body += chunk;
-          if (Buffer.byteLength(body) > 8192) throw fail(413, '한 번에 한두 문장만 작성해 주세요.');
-        }
-        let data;
-        try { data = JSON.parse(body); } catch { throw fail(400, '입력 내용을 다시 확인해 주세요.'); }
-        if (!data || typeof data.promptId !== 'string' || typeof data.answer !== 'string' || !data.answer.trim() || data.answer.length > 1200) {
+        const data = await readJson(req);
+        if (!data || typeof data.promptId !== 'string' || typeof data.answer !== 'string' || !data.answer.trim() || data.answer.length > 1200 ||
+            (data.submissionId !== undefined && (typeof data.submissionId !== 'string' || !data.submissionId || data.submissionId.length > 100)) ||
+            (data.activeMs !== undefined && (!Number.isFinite(data.activeMs) || data.activeMs < 0 || data.activeMs > 3_600_000)) ||
+            (data.assisted !== undefined && typeof data.assisted !== 'boolean') || (data.difficult !== undefined && typeof data.difficult !== 'boolean')) {
           throw fail(400, '영어 문장을 1~1,200자로 작성해 주세요.');
         }
-        const prompt = prompts.get(data.promptId);
+        const prompt = learning.presentation(data.promptId);
         if (!prompt) throw fail(404, '이전 문장이 만료됐어요. 새 문장을 시작해 주세요.', 'PROMPT_EXPIRED');
         if (state !== 'ready' || switching || closing) throw fail(503, message);
-        // Check again after reading the body: two simultaneous requests must not share a context.
         if (busy) throw fail(429, '앞 문장을 확인하고 있어요. 잠시 후 다시 시도해 주세요.');
         busy = true;
+        let submission;
+        let result;
+        let recorded = false;
+        const model = selection.provider === 'lmstudio' ? selection.modelId : 'bundled-qwen3-4b';
         try {
+          await worker?.foreground();
+          const id = data.submissionId || randomUUID();
+          submission = learning.beginAttempt({ id, promptId: prompt.id, answer: data.answer.trim(), activeMs: data.activeMs, assisted: data.assisted, difficult: data.difficult });
+          if (submission.cached) return json(res, 200, submission.cached);
           activeReview = tutor.review({ korean: prompt.korean, reference: prompt.reference, answer: data.answer.trim() });
-          const result = await activeReview;
-          const nextPrompt = await remember({ id: randomUUID(), ...result.next });
-          return json(res, 200, { verdict: result.verdict, corrected: result.corrected, feedback: result.feedback, ...(result.alternative ? { alternative: result.alternative } : {}), nextPrompt });
+          const output = await activeReview;
+          result = { verdict: output.verdict, corrected: output.corrected, feedback: output.feedback, ...(output.alternative ? { alternative: output.alternative } : {}) };
+          learning.finishAttempt(id, result, model);
+          recorded = true;
+          return json(res, 200, result);
+        } catch (error) {
+          if (submission?.id && !recorded) learning.failAttempt(submission.id, error, model);
+          throw error;
         } finally { busy = false; activeReview = undefined; }
       }
       if (req.method === 'GET' && assets.has(url.pathname)) {
@@ -179,10 +209,12 @@ export async function startServer({
   });
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, host, resolve);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, host, resolve);
+    });
+  } catch (error) { learning.close(); throw error; }
   const url = `http://127.0.0.1:${server.address().port}`;
   async function initialize(persist = true) {
     if (startup && state === 'loading') return startup;
@@ -251,16 +283,23 @@ export async function startServer({
     return startup;
   }
   const ready = initialize();
+  worker = createLearningWorker({ store: learning, getTutor: () => tutor,
+    getModel: () => selection.provider === 'lmstudio' ? selection.modelId : 'bundled-qwen3-4b',
+    canRun: () => state === 'ready' && !busy && !switching && !closing,
+  });
   return {
     url, ready,
     async close() {
+      if (closed) return;
+      closed = true;
       closing = true;
+      await worker.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       await startup;
       await activeReview?.catch(() => {});
       await tutor?.dispose();
-      await saveChain.catch(() => {});
+      learning.close();
     },
   };
 }

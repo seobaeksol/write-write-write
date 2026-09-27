@@ -60,6 +60,17 @@ export async function createTutor({ modelPath, onProgress = () => {} }) {
           }
         }
       },
+      async structured({ instructions, input, schema: outputSchema, signal }) {
+        if (disposed) throw new Error('Model disposed');
+        const outputGrammar = await llama.createGrammarForJsonSchema(outputSchema);
+        session.setChatHistory([{ type: 'system', text: instructions }]);
+        try {
+          const response = await session.prompt(JSON.stringify(input), {
+            grammar: outputGrammar, temperature: 0.4, maxTokens: 700, budgets: { thoughtTokens: 0 }, signal,
+          });
+          return outputGrammar.parse(response);
+        } finally { session.resetChatHistory(); }
+      },
       async dispose() {
         if (disposed) return;
         disposed = true;

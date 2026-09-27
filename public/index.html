@@ -16,6 +16,7 @@
       <header class="header">
         <a class="wordmark" href="/" aria-label="write, write, write. 홈">write, write, write<span>.</span></a>
         <div class="header-tools">
+          <button class="text-button" id="learning-open" type="button">학습 기록</button>
           <button class="text-button" id="model-settings" type="button">모델 설정</button>
         <div class="connection" id="connection" data-state="loading" role="status">
           <span class="connection-dot" aria-hidden="true"></span>
@@ -41,6 +42,18 @@
           <p id="settings-message" class="settings-description" role="status"></p>
           <button class="button button-primary" id="settings-save" type="submit">이 모델 사용하기</button>
         </form>
+      </dialog>
+
+      <dialog id="learning-dialog" aria-labelledby="learning-title">
+        <div class="settings-heading"><h2 id="learning-title">내 학습 기록</h2><button class="text-button" id="learning-close" type="button">닫기</button></div>
+        <p id="learning-summary" class="settings-description"></p>
+        <p class="settings-description">잘 기억하는 문장은 천천히, 어려운 문장은 더 자주 복습해요. 수준 추정은 여러 문장의 첫 시도 기록을 바탕으로 합니다.</p>
+        <ul id="learning-skills" class="learning-list"></ul>
+        <label class="check-label"><input id="generation-enabled" type="checkbox"> 쉬는 동안 맞춤 문장 만들기</label>
+        <p class="settings-description">앱이 열려 있고 학습 자료가 부족할 때만, 하루 최대 3개를 추가해요. AI가 만든 문장은 틀릴 수 있으니 문제가 있으면 알려 주세요.</p>
+        <h2>최근 답안</h2><ol id="learning-history" class="learning-list"></ol>
+        <p id="learning-message" class="error" role="status"></p>
+        <div class="settings-heading"><button class="text-button" id="learning-export" type="button">기록 내보내기</button><button class="text-button" id="learning-reset" type="button">학습 기록 초기화</button></div>
       </dialog>
 
       <main class="bootstrap" id="bootstrap" aria-labelledby="bootstrap-title">
@@ -75,7 +88,7 @@
 
       <main class="practice" id="practice" hidden>
         <section class="writing" aria-labelledby="prompt">
-          <p class="eyebrow">영어로 써 보세요</p>
+          <p class="eyebrow" id="practice-context">영어로 써 보세요</p>
           <h1 id="prompt" tabindex="-1">첫 문장을 준비하고 있어요.</h1>
           <form id="writing-form" novalidate>
             <div class="editor" id="editor">
@@ -91,6 +104,8 @@
               </div>
             </div>
           </form>
+          <div class="practice-tools"><label class="check-label"><input type="checkbox" id="felt-difficult"> 조금 어려워요</label><button class="text-button" id="reveal-answer" type="button">예시 답안 보기</button><button class="text-button" id="skip-prompt" type="button">건너뛰기</button></div>
+          <p id="revealed-reference" class="quiet-note" hidden></p>
           <div class="notice" id="notice" hidden>
             <p id="notice-message" role="status"></p>
             <button class="text-button" type="button" id="retry-connection" hidden>다시 연결</button>
@@ -112,6 +127,7 @@
             <p class="correction-label">다른 표현도 배워 보기 · 선택 사항</p>
             <p id="alternative-text"></p>
           </div>
+          <button class="text-button" id="report-feedback" type="button">판정에 문제가 있어요</button>
           <div class="feedback-actions">
             <button class="text-button" id="rewrite" type="button">다시 써 보기</button>
             <button class="button button-primary" id="next" type="button" aria-keyshortcuts="Enter">다음 문장 <span aria-hidden="true">Enter ↵</span></button>

@@ -14,7 +14,7 @@
   "homepage": "https://github.com/seobaeksol/write-write-write#readme",
   "type": "module",
   "main": "src/desktop.mjs",
-  "engines": { "node": ">=22.12" },
+  "engines": { "node": ">=22.13" },
   "scripts": {
     "setup": "node scripts/setup-model.mjs",
     "prestart": "npm run setup",

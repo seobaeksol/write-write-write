@@ -31,16 +31,19 @@ test('writing → feedback → next, and saved prompt survives a restart', async
   const result = await response.json();
   assert.equal(result.verdict, 'good');
   assert.equal(result.alternative, feedback.alternative);
-  assert.ok(result.nextPrompt.id);
-  assert.equal(result.nextPrompt.korean, feedback.next.korean);
-  assert.equal(result.nextPrompt.reference, undefined);
+  assert.equal(result.nextPrompt, undefined);
+  const next = await get('/api/prompt?after=' + prompt.id);
+  assert.notEqual(next.id, prompt.id);
+  assert.equal(next.reference, undefined);
+  assert.deepEqual(await get('/api/prompt?after=' + prompt.id), next);
   assert.deepEqual(await get('/api/prompt?id=' + prompt.id), prompt);
+  await app.close();
   const restored = await startServer(options);
   await restored.ready;
   try {
     assert.deepEqual(await (await fetch(restored.url + '/api/prompt?id=' + prompt.id)).json(), prompt);
   } finally { await restored.close(); }
-  assert.match(await (await fetch(app.url)).text(), /영어 작문/);
+
 });
 
 test('invalid input and cross-origin requests never run inference', async (t) => {
@@ -132,4 +135,31 @@ test('a failed bootstrap explains recovery and can retry initialization', async 
   }
   assert.equal((await (await fetch(app.url + '/api/status')).json()).state, 'ready');
   assert.equal(attempts, 2);
+});
+
+test('learning API records one event per presentation, caches duplicate submissions, and exports history', async t => {
+  let calls=0;
+  const {app,get,post}=await fixture(t,async()=>{calls++;return feedback;});
+  const prompt=await get('/api/prompt?session=learning-api');
+  const body={promptId:prompt.id,answer:'I like coffee.',submissionId:'same-submission',activeMs:4500};
+  const first=await (await post(body)).json();
+  assert.deepEqual(await (await post(body)).json(),first);
+  assert.equal(calls,1);
+  const summary=await get('/api/learning');
+  assert.equal(summary.completed,1);assert.equal(summary.attempts,1);
+  const exported=await get('/api/learning/export');
+  assert.equal(exported.tables.attempts[0].active_ms,4500);
+  assert.equal(exported.tables.review_events.length,1);
+  const report=await fetch(app.url+'/api/learning/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({promptId:prompt.id})});
+  assert.equal(report.status,200);assert.equal((await get('/api/learning')).completed,0);
+});
+
+test('an occupied port releases the database so desktop fallback can start', async t => {
+  const first=await fixture(t);
+  const dir=await mkdtemp(join(tmpdir(),'write-port-fallback-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const options={...first.options,dataDir:dir,port:Number(new URL(first.app.url).port)};
+  await assert.rejects(startServer(options),{code:'EADDRINUSE'});
+  const fallback=await startServer({...options,port:0});
+  await fallback.ready;await fallback.close();
 });

@@ -57,6 +57,18 @@ export async function createLMStudioTutor({ endpoint, modelId }) {
         }
       }
     },
+    async structured({ instructions, input, schema: outputSchema, signal }) {
+      if (disposed) throw new Error('Model disposed');
+      const data = await call(endpoint, '/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+        body: JSON.stringify({ model: modelId, stream: false, temperature: 0.4, max_tokens: 700,
+          ...(model.reasoningOff ? { reasoning_effort: 'none' } : {}),
+          messages: [{ role: 'system', content: instructions }, { role: 'user', content: JSON.stringify(input) }],
+          response_format: { type: 'json_schema', json_schema: { name: 'learning_content', strict: true, schema: outputSchema } },
+        }),
+      });
+      return JSON.parse(data.choices?.[0]?.message?.content);
+    },
     async dispose() { disposed = true; },
   };
 }
