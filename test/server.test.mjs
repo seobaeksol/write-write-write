@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { startServer } from '../src/server.mjs';
 
 // Only HTTP boundaries use a stub; real GGUF inference is checked separately.
-const feedback = { verdict: 'good', corrected: 'I like coffee.', feedback: ['자연스러운 문장이에요.'], next: { korean: '오늘은 날씨가 좋아요.', reference: 'The weather is nice today.' } };
+const feedback = { verdict: 'good', corrected: 'I like coffee.', feedback: ['자연스러운 문장이에요.'], alternative: '다른 표현으로 I enjoy coffee.도 쓸 수 있어요.', next: { korean: '오늘은 날씨가 좋아요.', reference: 'The weather is nice today.' } };
 async function fixture(t, review = async () => feedback) {
   const dataDir = await mkdtemp(join(tmpdir(), 'write-write-test-'));
   const options = { port: 0, dataDir, modelPath: new URL('../package.json', import.meta.url), tutorFactory: async () => ({ review, dispose() {} }) };
@@ -30,6 +30,7 @@ test('writing → feedback → next, and saved prompt survives a restart', async
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.equal(result.verdict, 'good');
+  assert.equal(result.alternative, feedback.alternative);
   assert.ok(result.nextPrompt.id);
   assert.equal(result.nextPrompt.korean, feedback.next.korean);
   assert.equal(result.nextPrompt.reference, undefined);

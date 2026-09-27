@@ -118,3 +118,16 @@ h2 { font-size: 17px; letter-spacing: -.035em; font-weight: 600; margin: 0; line
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.header-tools { display: flex; align-items: center; gap: 20px; }
+dialog { width: min(520px, calc(100% - 32px)); max-height: calc(100svh - 40px); overflow: auto; padding: 28px; border: 1px solid var(--border); border-radius: 14px; background: var(--paper); color: var(--ink); box-shadow: 0 20px 80px #292d2726; }
+dialog::backdrop { background: #292d274d; }
+.settings-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.settings-description { color: #74776e; font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; }
+dialog label { display: block; font-size: 13px; margin: 18px 0 8px; }
+dialog input, dialog select { width: 100%; min-height: 44px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: #fcfcf9; color: var(--ink); font: inherit; font-size: 14px; }
+dialog input:focus-visible, dialog select:focus-visible { outline: 2px solid var(--olive); outline-offset: 2px; }
+dialog .button { width: 100%; margin-top: 10px; }
+@media (max-width: 480px) { .header { flex-wrap: wrap; } .header-tools { margin-left: auto; gap: 16px; } dialog { padding: 22px; } }
+
+.optional-expression { margin-top: 22px; padding: 0 18px 12px; border-left: 2px solid var(--border); color: #72766b; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }

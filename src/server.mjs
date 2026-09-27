@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createPrompt } from './prompts.mjs';
+import { normalizeEndpoint, listModels, createLMStudioTutor } from './lm-studio.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const assets = new Map([
@@ -19,9 +20,21 @@ export async function startServer({
   host = '127.0.0.1',
   dataDir = path.join(root, '.data'),
   modelPath,
+  lmTutorFactory = createLMStudioTutor,
+  modelLister = listModels,
   tutorFactory = async (options) => (await import('./tutor.mjs')).createTutor(options),
 } = {}) {
   await mkdir(dataDir, { recursive: true });
+  const settingsPath = path.join(dataDir, 'settings.json');
+  let selection = { provider: 'bundled', endpoint: 'http://127.0.0.1:1234', modelId: '' };
+  try {
+    const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+    if (['bundled', 'lmstudio'].includes(saved.provider) && typeof saved.modelId === 'string') {
+      selection = { provider: saved.provider, endpoint: normalizeEndpoint(saved.endpoint), modelId: saved.modelId };
+    }
+  } catch (error) { if (error.code !== 'ENOENT') console.warn('모델 설정을 기본값으로 시작합니다.'); }
+  let switching = false;
+  let closing = false;
   const savedPath = path.join(dataDir, 'prompts.json');
   let prompts = new Map();
   try { prompts = new Map(JSON.parse(await readFile(savedPath, 'utf8'))); }
@@ -70,15 +83,52 @@ export async function startServer({
       }
       if (req.headers.origin && req.headers.origin !== base.origin) throw fail(403, '앱 화면에서 다시 시도해 주세요.');
       const url = new URL(req.url, base);
+      if (req.method === 'GET' && url.pathname === '/api/settings') return json(res, 200, { ...selection, state });
+      if (req.method === 'GET' && url.pathname === '/api/models') {
+        let endpoint;
+        try { endpoint = normalizeEndpoint(url.searchParams.get('endpoint') || selection.endpoint); }
+        catch { throw fail(400, '이 컴퓨터의 LM Studio 서버 주소를 입력해 주세요.'); }
+        try { return json(res, 200, { models: await modelLister(endpoint) }); }
+        catch (error) { throw fail(503, error.message); }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/settings') {
+        // Settings control the host's AI runtime; only the host can change them in LAN mode.
+        if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) throw fail(403, '모델 설정은 앱이 실행 중인 컴퓨터에서 변경해 주세요.');
+        if (busy || switching || state === 'loading' || closing) throw fail(409, '현재 작업이 끝난 뒤 모델을 변경해 주세요.');
+        if (!req.headers['content-type']?.startsWith('application/json')) throw fail(415, 'JSON 형식으로 보내 주세요.');
+        let body = '';
+        for await (const chunk of req) {
+          body += chunk;
+          if (Buffer.byteLength(body) > 4096) throw fail(413, '설정이 너무 길어요.');
+        }
+        let next;
+        try {
+          const data = JSON.parse(body);
+          if (!['bundled', 'lmstudio'].includes(data.provider) || typeof data.modelId !== 'string' || data.modelId.length > 512 || (data.provider === 'lmstudio' && !data.modelId.trim())) throw new Error();
+          next = { provider: data.provider, endpoint: normalizeEndpoint(data.endpoint), modelId: data.provider === 'lmstudio' ? data.modelId : '' };
+        } catch { throw fail(400, '모델과 로컬 서버 주소를 확인해 주세요.'); }
+        if (busy || switching || state === 'loading' || closing) throw fail(409, '현재 작업이 끝난 뒤 모델을 변경해 주세요.');
+        switching = true;
+        try {
+          if (next.provider === 'lmstudio') {
+            const models = await modelLister(next.endpoint);
+            if (!models.some(model => model.id === next.modelId)) throw fail(400, '목록에서 사용할 모델을 선택해 주세요.');
+          }
+          selection = next;
+          void initialize(true);
+          return json(res, 202, { ...selection, state });
+        } catch (error) { throw error.status ? error : fail(503, error.message); }
+        finally { switching = false; }
+      }
       if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, { state, stage, progress, message, ...(action ? { action } : {}) });
       if (req.method === 'POST' && url.pathname === '/api/bootstrap/retry') {
-        if (state === 'loading') return json(res, 202, { state, stage, progress, message });
+        if (state === 'loading' || switching || closing) return json(res, 202, { state, stage, progress, message });
         if (state === 'ready') return json(res, 200, { state, stage, progress, message });
         void initialize();
         return json(res, 202, { state, stage, progress, message });
       }
       if (req.method === 'GET' && url.pathname === '/api/prompt') {
-        if (state !== 'ready') throw fail(503, message);
+        if (state !== 'ready' || switching || closing) throw fail(503, message);
         const id = url.searchParams.get('id');
         if (id) {
           const prompt = prompts.get(id);
@@ -88,7 +138,7 @@ export async function startServer({
         return json(res, 200, await remember(createPrompt()));
       }
       if (req.method === 'POST' && url.pathname === '/api/review') {
-        if (state !== 'ready') throw fail(503, message);
+        if (state !== 'ready' || switching || closing) throw fail(503, message);
         if (busy) throw fail(429, '앞 문장을 확인하고 있어요. 잠시 후 다시 시도해 주세요.');
         if (!req.headers['content-type']?.startsWith('application/json')) throw fail(415, 'JSON 형식으로 보내 주세요.');
         let body = '';
@@ -104,6 +154,7 @@ export async function startServer({
         }
         const prompt = prompts.get(data.promptId);
         if (!prompt) throw fail(404, '이전 문장이 만료됐어요. 새 문장을 시작해 주세요.', 'PROMPT_EXPIRED');
+        if (state !== 'ready' || switching || closing) throw fail(503, message);
         // Check again after reading the body: two simultaneous requests must not share a context.
         if (busy) throw fail(429, '앞 문장을 확인하고 있어요. 잠시 후 다시 시도해 주세요.');
         busy = true;
@@ -111,7 +162,7 @@ export async function startServer({
           activeReview = tutor.review({ korean: prompt.korean, reference: prompt.reference, answer: data.answer.trim() });
           const result = await activeReview;
           const nextPrompt = await remember({ id: randomUUID(), ...result.next });
-          return json(res, 200, { verdict: result.verdict, corrected: result.corrected, feedback: result.feedback, nextPrompt });
+          return json(res, 200, { verdict: result.verdict, corrected: result.corrected, feedback: result.feedback, ...(result.alternative ? { alternative: result.alternative } : {}), nextPrompt });
         } finally { busy = false; activeReview = undefined; }
       }
       if (req.method === 'GET' && assets.has(url.pathname)) {
@@ -133,7 +184,7 @@ export async function startServer({
     server.listen(port, host, resolve);
   });
   const url = `http://127.0.0.1:${server.address().port}`;
-  async function initialize() {
+  async function initialize(persist = true) {
     if (startup && state === 'loading') return startup;
     state = 'loading';
     stage = 'resources';
@@ -142,6 +193,13 @@ export async function startServer({
     action = undefined;
     startup = (async () => {
     try {
+      await tutor?.dispose();
+      tutor = undefined;
+      if (selection.provider === 'lmstudio') {
+        stage = 'engine';
+        message = 'LM Studio에 연결하고 있어요.';
+        tutor = await lmTutorFactory(selection);
+      } else {
       if (!modelPath) {
         const config = JSON.parse(await readFile(path.join(root, 'models/model.json'), 'utf8'));
         modelPath = process.env.WRITE_MODEL_PATH || path.join(root, 'models', config.filename);
@@ -154,6 +212,11 @@ export async function startServer({
         if (Number.isFinite(update?.progress)) progress = Math.max(progress, Math.min(99, Math.round(update.progress)));
         if (update?.message) message = update.message;
       } });
+      }
+      if (persist) {
+        await writeFile(`${settingsPath}.tmp`, JSON.stringify(selection));
+        await rename(`${settingsPath}.tmp`, settingsPath);
+      }
       state = 'ready';
       stage = 'ready';
       progress = 100;
@@ -178,6 +241,10 @@ export async function startServer({
             : '작문 코치와 연결하지 못했어요.';
         action = '다시 시도해 주세요. 계속 실패하면 앱을 완전히 종료한 뒤 다시 실행해 주세요.';
       }
+      if (selection.provider === 'lmstudio') {
+        message = error.message;
+        action = 'LM Studio에서 로컬 서버를 켜거나, 모델 설정에서 기본 모델을 선택해 주세요.';
+      }
       console.error('Local model:', error);
     }
     })();
@@ -187,6 +254,7 @@ export async function startServer({
   return {
     url, ready,
     async close() {
+      closing = true;
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       await startup;

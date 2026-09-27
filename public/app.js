@@ -19,6 +19,7 @@
     corrected: byId("corrected"), correctionLabel: byId("correction-label"),
     points: byId("feedback-points"), rewrite: byId("rewrite"), next: byId("next"), freshPrompt: byId("fresh-prompt"),
   };
+  let settingsLoading = false;
   let prompt = null;
   let review = null;
   let state = "loading";
@@ -59,6 +60,7 @@
   }
 
   function updateSubmit() {
+    byId("settings-save").disabled = busy || state === "loading" || settingsLoading;
     ui.submit.disabled = busy || state !== "ready" || !prompt || promptExpired || !ui.answer.value.trim();
     ui.submitLabel.textContent = busy ? "문장을 읽고 있어요" : "피드백 받기";
     ui.spinner.hidden = !busy;
@@ -74,11 +76,13 @@
     ui.feedback.hidden = !review;
     ui.quietNote.hidden = !!review;
     if (!review) return;
+    byId("alternative").hidden = !review.alternative;
+    byId("alternative-text").textContent = typeof review.alternative === "string" ? review.alternative : "";
     const good = review.verdict === "good";
     ui.feedback.dataset.verdict = review.verdict;
     ui.feedbackHeading.textContent = good ? "뜻을 잘 전달했어요." : "조금만 다듬어 볼까요?";
     ui.verdictIcon.textContent = good ? "✓" : "↗";
-    ui.correctionLabel.textContent = good ? "자연스러운 표현" : "이렇게 쓰면 더 자연스러워요";
+    ui.correctionLabel.textContent = good ? "자연스러운 표현" : "이렇게 고쳐 써 보세요";
     ui.corrected.textContent = review.corrected;
     ui.points.replaceChildren(...review.feedback.map((point) => {
       const item = document.createElement("li");
@@ -271,7 +275,7 @@
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 ||
         event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
-        event.defaultPrevented || !review || busy) return;
+        event.defaultPrevented || byId("settings-dialog").open || !review || busy) return;
     // Keep Enter's normal activation on explicitly focused buttons and links.
     if (event.target.closest("button, a") && event.target !== ui.next) return;
     event.preventDefault();
@@ -311,6 +315,79 @@
     } catch (error) {
       setState("error", error.message, { stage: "resources", progress: 5, action: "앱을 완전히 종료한 뒤 다시 실행해 주세요." });
     }
+  });
+  const settingsDialog = byId("settings-dialog");
+  const provider = byId("model-provider");
+  const endpoint = byId("lm-endpoint");
+  const modelSelect = byId("lm-model");
+  const settingsMessage = byId("settings-message");
+  let modelRequest = 0;
+  let preferredModel = "";
+  async function refreshModels() {
+    const revision = ++modelRequest;
+    const wanted = modelSelect.value || preferredModel;
+    settingsMessage.textContent = "LM Studio 모델 목록을 확인하고 있어요.";
+    modelSelect.replaceChildren();
+    try {
+      const data = await request(`/api/models?endpoint=${encodeURIComponent(endpoint.value)}`);
+      if (revision !== modelRequest) return;
+      for (const model of data.models) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = `${model.name}${model.format ? " · " + model.format.toUpperCase() : ""}`;
+        modelSelect.append(option);
+      }
+      if ([...modelSelect.options].some(option => option.value === wanted)) modelSelect.value = wanted;
+      settingsMessage.textContent = data.models.length ? "사용할 모델을 선택하고 적용해 주세요." : "다운로드한 대화 모델이 없어요. LM Studio에서 모델을 다운로드해 주세요.";
+    } catch (error) {
+      if (revision === modelRequest) settingsMessage.textContent = error.message;
+    }
+  }
+  byId("model-settings").addEventListener("click", async () => {
+    settingsDialog.showModal();
+    settingsLoading = true;
+    updateSubmit();
+    try {
+      const saved = await request("/api/settings");
+      provider.value = saved.provider;
+      endpoint.value = saved.endpoint;
+      endpoint.disabled = provider.value !== "lmstudio";
+      preferredModel = saved.modelId;
+      modelSelect.replaceChildren();
+      byId("lm-settings").hidden = provider.value !== "lmstudio";
+      settingsMessage.textContent = "선택은 다음 실행에도 유지돼요.";
+      if (provider.value === "lmstudio") await refreshModels();
+    } catch (error) { settingsMessage.textContent = error.message; }
+    finally { settingsLoading = false; updateSubmit(); }
+  });
+  byId("settings-close").addEventListener("click", () => settingsDialog.close());
+  provider.addEventListener("change", () => {
+    byId("lm-settings").hidden = provider.value !== "lmstudio";
+    endpoint.disabled = provider.value !== "lmstudio";
+    if (provider.value === "lmstudio") void refreshModels();
+  });
+  endpoint.addEventListener("input", () => { modelRequest++; modelSelect.replaceChildren(); });
+  byId("models-refresh").addEventListener("click", () => void refreshModels());
+  byId("settings-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (busy || state === "loading" || settingsLoading) return;
+    if (provider.value === "lmstudio" && !modelSelect.value) {
+      settingsMessage.textContent = "목록을 새로고침하고 모델을 선택해 주세요.";
+      return;
+    }
+    settingsLoading = true;
+    updateSubmit();
+    save();
+    try {
+      await request("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: provider.value, endpoint: provider.value === "bundled" ? "http://127.0.0.1:1234" : endpoint.value, modelId: modelSelect.value }),
+      });
+      settingsDialog.close();
+      setState("loading", "선택한 모델을 준비하고 있어요.");
+      void checkStatus();
+    } catch (error) { settingsMessage.textContent = error.message; }
+    finally { settingsLoading = false; updateSubmit(); }
   });
   window.addEventListener("pagehide", save);
   window.addEventListener("online", () => { if (state === "error") void checkStatus(); });
